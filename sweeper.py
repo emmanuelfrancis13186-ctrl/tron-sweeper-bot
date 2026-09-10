@@ -81,7 +81,7 @@ if __name__ == "__main__":
     while True:
         try:
             if not sweep_trx():
-                time.sleep(0.1)
+                time.sleep(0.01)
             else:
                 time.sleep(30)
         except Exception as e:
