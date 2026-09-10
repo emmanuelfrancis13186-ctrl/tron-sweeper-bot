@@ -91,7 +91,7 @@ if __name__ == "__main__":
             if sweep_usdt():
                 time.sleep(60)
             else:
-                time.sleep(15)
+                time.sleep(5)
         except Exception as e:
             print(f"[{time.ctime()}] ❌ Critical error: {e}")
             time.sleep(30)
