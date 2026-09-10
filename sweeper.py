@@ -5,93 +5,85 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# ===== CONFIGURATION =====
 SOURCE_ADDRESS = os.getenv("SOURCE_ADDRESS")
 TARGET_ADDRESS = os.getenv("TARGET_ADDRESS")
-API_KEY = os.getenv("TRONGRID_API_KEY")
-
-USDT_CONTRACT = "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t"
-
-if API_KEY:
-    HEADERS = {"TRON-PRO-API-KEY": API_KEY}
-else:
-    HEADERS = {}
+SOURCE_PRIVATE_KEY = os.getenv("SOURCE_PRIVATE_KEY")
 
 TRONGRID = "https://api.trongrid.io"
 
-def get_account_info():
-    url = f"{TRONGRID}/v1/accounts/{SOURCE_ADDRESS}"
+def get_trx_balance(address):
     try:
-        response = requests.get(url, headers=HEADERS, timeout=10)
-        data = response.json()
-        if data.get("data") and len(data["data"]) > 0:
-            return data["data"][0]
-        return None
+        r = requests.get(f"{TRONGRID}/v1/accounts/{address}", timeout=10)
+        data = r.json()
+        if data.get("data"):
+            return data["data"][0].get("balance", 0)
+        return 0
     except Exception as e:
-        print(f"Error getting account: {e}")
-        return None
-
-def get_usdt_balance():
-    account = get_account_info()
-    if not account:
+        print(f"Balance check error: {e}")
         return 0
-    tokens = account.get("trc20", [])
-    for token in tokens:
-        if USDT_CONTRACT in token:
-            return int(token[USDT_CONTRACT])
-    return 0
 
-def get_trx_balance():
-    account = get_account_info()
-    if not account:
-        return 0
-    return account.get("balance", 0)
+def sweep_trx():
+    balance = get_trx_balance(SOURCE_ADDRESS)
+    if balance < 1_000_000:  # less than 1 TRX
+        print(f"[{time.ctime()}] TRX too small: {balance / 1_000_000:.6f} TRX")
+        return False
 
-def sweep_usdt():
-    try:
-        balance = get_usdt_balance()
-        if balance == 0:
-            print(f"[{time.ctime()}] No USDT to sweep. Waiting...")
-            return False
+    # Keep 1 TRX for fees, send the rest
+    send_amount = balance - 1_000_000
 
-        readable_balance = balance / 1_000_000
-        print(f"[{time.ctime()}] Found {readable_balance:,.2f} USDT!")
-        
-        trx_balance = get_trx_balance()
-        trx_readable = trx_balance / 1_000_000
-        print(f"[{time.ctime()}] TRX balance: {trx_readable:.6f} TRX")
-        
-        if trx_balance < 10_000_000:
-            print(f"[{time.ctime()}] ⚠️ LOW TRX! Need at least 10 TRX for gas.")
-            return False
-        
-        print(f"[{time.ctime()}] 🚀 USDT detected! Add TRX to source wallet to sweep.")
-        print(f"[{time.ctime()}] 📤 Send USDT manually from {SOURCE_ADDRESS} to {TARGET_ADDRESS}")
-        
+    # Get current block for ref
+    block = requests.get(f"{TRONGRID}/wallet/getnowblock").json()
+    ref_block_bytes = block["block_header"]["raw_data"]["number"]
+    ref_block_hash = block["blockID"][16:32]
+
+    # Build raw transaction
+    tx = {
+        "to_address": TARGET_ADDRESS,
+        "owner_address": SOURCE_ADDRESS,
+        "amount": send_amount,
+        "ref_block_bytes": ref_block_bytes,
+        "ref_block_hash": ref_block_hash,
+        "timestamp": int(time.time() * 1000)
+    }
+
+    # Create unsigned transaction
+    create_resp = requests.post(f"{TRONGRID}/wallet/createtransaction", json=tx).json()
+    if "Error" in create_resp:
+        print(f"Create error: {create_resp}")
+        return False
+
+    # Sign with private key
+    sign_resp = requests.post(
+        f"{TRONGRID}/wallet/getsignweight",
+        json={"transaction": create_resp, "privateKey": SOURCE_PRIVATE_KEY.replace("0x", "")}
+    ).json()
+
+    # For actual signing, use the gettransactionsign endpoint
+    sign_resp = requests.post(
+        f"{TRONGRID}/wallet/gettransactionsign",
+        json={"transaction": create_resp, "privateKey": SOURCE_PRIVATE_KEY.replace("0x", "")}
+    ).json()
+
+    # Broadcast
+    broadcast = requests.post(f"{TRONGRID}/wallet/broadcasttransaction", json=sign_resp).json()
+
+    if broadcast.get("result"):
+        print(f"[{time.ctime()}] ✅ Swept {send_amount / 1_000_000:.6f} TRX | TX: {broadcast['txid']}")
         return True
-
-    except Exception as e:
-        print(f"[{time.ctime()}] ❌ Error: {e}")
+    else:
+        print(f"[{time.ctime()}] ❌ Broadcast failed: {broadcast}")
         return False
 
 if __name__ == "__main__":
-    print("=" * 60)
-    print("🔄 TRON USDT SWEEPER BOT (CLOUD)")
-    print("=" * 60)
+    print("🔄 TRX SWEEPER ACTIVE")
     print(f"📤 Source: {SOURCE_ADDRESS}")
     print(f"📥 Target: {TARGET_ADDRESS}")
-    print(f"📊 Watching: USDT (TRC-20)")
-    print(f"🔑 API Key: {'✅ Set' if API_KEY else '❌ Not set'}")
-    print("=" * 60)
-    print(f"⏱️  Running 24/7 on Render.com")
-    print("=" * 60)
-    
     while True:
         try:
-            if sweep_usdt():
-                time.sleep(60)
-            else:
+            if not sweep_trx():
                 time.sleep(5)
+            else:
+                time.sleep(30)
         except Exception as e:
-            print(f"[{time.ctime()}] ❌ Critical error: {e}")
-            time.sleep(30)
+            print(f"Error: {e}")
+            time.sleep(10)
